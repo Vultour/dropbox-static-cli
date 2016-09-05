@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import os
+import sys
 import logging
 import dropbox
 import argparse
@@ -27,7 +28,9 @@ def parse_arguments():
 
     parser_list = subparsers.add_parser("list", help="List items in Dropbox")
     parser_list.add_argument("DROPBOX_PATH")
-    parser_list.add_argument("-m", "--more", action="count", help="Display more pages (if available)")
+    parser_list.add_argument("-m", "--more", action="count", help="Display more pages (if available), repeat for further pages")
+    parser_list.add_argument("-r", "--recursive", action="store_true", help="Recursively list directories")
+    parser_list.add_argument("-d", "--deleted", action="store_true", help="Show deleted items")
     parser_list.set_defaults(func=exec_list)
 
     parser_get = subparsers.add_parser("get", help="Download items from Dropbox")
@@ -98,11 +101,40 @@ def init_dropbox(key):
 
 def exec_default(args):
     print "Executing no command"
-    print args
+    L.error("No command matched the arguments")
 
 def exec_list(args, dbx):
-    print "Executing LIST command"
-    print args
+    L.info("Executing LIST command")
+
+    if ((len(args.DROPBOX_PATH) == 1) and (args.DROPBOX_PATH != "/")):
+        L.error("Invalid path '{}' (you probably meant '/')".format(args.DROPBOX_PATH))
+        sys.exit(1)
+
+    if ((len(args.DROPBOX_PATH) > 1) and (args.DROPBOX_PATH[0] != "/")):
+        L.error("Invalid path '{}' (needs to start with '/')".format(args.DROPBOX_PATH))
+        sys.exit(1)
+
+    more = args.more
+
+    result = dbx.files_list_folder("" if (args.DROPBOX_PATH == "/") else args.DROPBOX_PATH, recursive=args.recursive, include_deleted=args.deleted)
+    print_entries(result.entries)
+
+    if (result.has_more and (more < 1)):
+        print "There are more entries, run with --more to continue retrieving"
+    if ((not result.has_more) and (more > 0)):
+        L.warn("File listing ended but there were unconsumed --more parameters")
+
+    while ((result.has_more) and (more > 0)):
+        more -= 1
+        result = dbx.files_list_folder_continue(result.cursor)
+
+        print_entries(result.entries)
+
+        if (result.has_more and (more < 1)):
+            print "There are more entries, run with additional --more parameters to continue retrieving"
+        if ((not result.has_more) and (more > 0)):
+            L.warn("File listing ended but there were unconsumed --more parameters")
+
 
 def exec_get(args):
     print "Executing GET command"
@@ -156,6 +188,22 @@ def exec_info_quota(args, dbx):
         L.error("Team accounts are not supported")
 
 
+def print_entries(entries):
+    for entry in entries:
+        if (type(entry) is dropbox.files.FolderMetadata):
+            print "[d] - {}/".format(_s(entry.path_display))
+        elif (type(entry) is dropbox.files.FileMetadata):
+            print "[ ] - {}".format(_s(entry.path_display))
+        else:
+            print "[?] - {}".format(_s(entry.path_display))
+
+def _s(s):
+    if (type(s) is str):
+        return unicode(s, "utf-8", errors="ignore")
+    else:
+        return s.encode("utf-8")
+
+
 def main():
     try:
         parse_arguments()
@@ -163,6 +211,23 @@ def main():
         L.error("Authentication error")
     except dropbox.exceptions.BadInputError as e:
         L.error("Invalid input: {}".format(e.message))
+    except dropbox.exceptions.ApiError as e:
+        if (type(e.error) is dropbox.files.ListFolderError):
+            if (e.error.is_path()):
+                if (e.error.get_path().is_malformed_path()):
+                    L.error("API Error: Malformed path - {}".format(e.error.get_path().get_malformed_path()))
+                if (e.error.get_path().is_not_file()):
+                    L.error("API Error: Not a file")
+                if (e.error.get_path().is_not_folder()):
+                    L.error("API Error: Not a folder")
+                if (e.error.get_path().is_not_found()):
+                    L.error("API Error: Not found")
+                if (e.error.get_path().is_other()):
+                    L.error("API Error: Other (?)")
+                if (e.error.get_path().is_restricted_content()):
+                    L.error("API Error: Restricted content")
+            else:
+                L.error("API Error: Unknown path issue")
 
 
 if (__name__ == "__main__"):
