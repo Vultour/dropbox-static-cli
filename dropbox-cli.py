@@ -19,7 +19,7 @@ L = None
 def parse_arguments():
     parser = argparse.ArgumentParser(
             prog="dropbox-static-cli",
-            description="A command line tool for interfacing with Dropbox without the need for local sync storage",
+            description="A command line tool for interacting with Dropbox without the need for local sync storage",
             epilog="Note: Put your API key in {} to avoid having to pass in --api-key with every command!".format(DEFAULT_KEY_PATH)
     )
 
