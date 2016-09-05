@@ -2,6 +2,7 @@
 
 import os
 import sys
+import time
 import logging
 import dropbox
 import argparse
@@ -34,7 +35,9 @@ def parse_arguments():
     parser_list.set_defaults(func=exec_list)
 
     parser_get = subparsers.add_parser("get", help="Download items from Dropbox")
-    parser_get.add_argument("-o", "--output", required=True, help="Save path for the downloaded file")
+    parser_get_opt = parser_get.add_mutually_exclusive_group(required=True)
+    parser_get_opt.add_argument("-o", "--output", help="Location where to save the downloaded file")
+    parser_get_opt.add_argument("-s", "--stdout", action="store_true", help="Output the file to stdout (useful for piping further)")
     parser_get.add_argument("DROPBOX_PATH", help="Path inside your Dropbox")
     parser_get.set_defaults(func=exec_get)
 
@@ -106,17 +109,10 @@ def exec_default(args):
 def exec_list(args, dbx):
     L.info("Executing LIST command")
 
-    if ((len(args.DROPBOX_PATH) == 1) and (args.DROPBOX_PATH != "/")):
-        L.error("Invalid path '{}' (you probably meant '/')".format(args.DROPBOX_PATH))
-        sys.exit(1)
-
-    if ((len(args.DROPBOX_PATH) > 1) and (args.DROPBOX_PATH[0] != "/")):
-        L.error("Invalid path '{}' (needs to start with '/')".format(args.DROPBOX_PATH))
-        sys.exit(1)
-
+    path = validate_dropbox_path(args.DROPBOX_PATH, is_file=False)
     more = args.more
 
-    result = dbx.files_list_folder("" if (args.DROPBOX_PATH == "/") else args.DROPBOX_PATH, recursive=args.recursive, include_deleted=args.deleted)
+    result = dbx.files_list_folder(path, recursive=args.recursive, include_deleted=args.deleted)
     print_entries(result.entries)
 
     if (result.has_more and (more < 1)):
@@ -136,9 +132,22 @@ def exec_list(args, dbx):
             L.warn("File listing ended but there were unconsumed --more parameters")
 
 
-def exec_get(args):
-    print "Executing GET command"
-    print args
+def exec_get(args, dbx):
+    L.info("Executing GET command")
+
+    path = validate_dropbox_path(args.DROPBOX_PATH, is_file=True)
+
+    if (args.stdout):
+        if (sys.platform == "win32"):
+            import msvcrt
+            msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+        response = dbx.files_download(path)
+        print response[0]
+        L.info("Retrieved file '{}', last modified {}".format(response[0].name, response[0].client_modified.strftime("%Y/%m/%d %H:%M:%S")))
+        sys.stdout.write(response[1].content)
+    else:
+        response = dbx.files_download_to_file(args.output, path)
+        L.info("Retrieved file '{}', last modified {}".format(response.name, response.client_modified.strftime("%Y/%m/%d %H:%M:%S")))
 
 def exec_put(args):
     print "Executing PUT command"
@@ -188,6 +197,27 @@ def exec_info_quota(args, dbx):
         L.error("Team accounts are not supported")
 
 
+def validate_dropbox_path(path, is_file=False):
+    global L
+
+    if (is_file and (path[-1] == "/")):
+        L.error("Invalid path '{}' (files cannnot end with '/')".format(path))
+        sys.exit(1)
+
+    if (is_file and (len(path) < 2)):
+        L.error("Invalid path '{}' (didn't you forget to start with '/'?)".format(path))
+        sys.exit(1)
+
+    if ((len(path) == 1) and (path != "/")):
+        L.error("Invalid path '{}' (you probably meant '/')".format(path))
+        sys.exit(1)
+
+    if ((len(path) > 1) and (path[0] != "/")):
+        L.error("Invalid path '{}' (needs to start with '/')".format(path))
+        sys.exit(1)
+
+    return ("" if (path == "/") else path)
+
 def print_entries(entries):
     for entry in entries:
         if (type(entry) is dropbox.files.FolderMetadata):
@@ -212,7 +242,7 @@ def main():
     except dropbox.exceptions.BadInputError as e:
         L.error("Invalid input: {}".format(e.message))
     except dropbox.exceptions.ApiError as e:
-        if (type(e.error) is dropbox.files.ListFolderError):
+        if ((type(e.error) is dropbox.files.ListFolderError) or (type(e.error) is dropbox.files.DownloadError)):
             if (e.error.is_path()):
                 if (e.error.get_path().is_malformed_path()):
                     L.error("API Error: Malformed path - {}".format(e.error.get_path().get_malformed_path()))
@@ -221,13 +251,16 @@ def main():
                 if (e.error.get_path().is_not_folder()):
                     L.error("API Error: Not a folder")
                 if (e.error.get_path().is_not_found()):
-                    L.error("API Error: Not found")
+                    L.error("API Error: File not found")
                 if (e.error.get_path().is_other()):
                     L.error("API Error: Other (?)")
                 if (e.error.get_path().is_restricted_content()):
                     L.error("API Error: Restricted content")
             else:
                 L.error("API Error: Unknown path issue")
+        else:
+            L.error("API Error: Unknown", e)
+            raise e
 
 
 if (__name__ == "__main__"):
