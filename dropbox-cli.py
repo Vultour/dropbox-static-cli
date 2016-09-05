@@ -6,10 +6,12 @@ import time
 import logging
 import dropbox
 import argparse
+import datetime
 
 
 APP_NAME            = "dropbox-static-cli"
 DEFAULT_KEY_PATH    = "{}/.dropbox-static-cli-key".format(os.environ["HOME"])
+UPLOAD_CHUNK_SIZE   = 1024 * 1024 * 100 # Upload in 100MB chunks (150MB limit on the API)
 
 L = None
 
@@ -42,7 +44,11 @@ def parse_arguments():
     parser_get.set_defaults(func=exec_get)
 
     parser_put = subparsers.add_parser("put", help="Upload items to Dropbox")
-    parser_put.add_argument("-f", "--file", required=True, help="File to upload")
+    parser_put_opt = parser_put.add_mutually_exclusive_group(required=True)
+    parser_put_opt.add_argument("-a", "--add", action="store_true", help="Add the file using the autorename strategy if it already exists")
+    parser_put_opt.add_argument("-o", "--overwrite", action="store_true", help="Overwrite the file if it already exists")
+    parser_put.add_argument("-m", "--mute", action="store_true", help="Mute the file change notification synced clients receive from this action")
+    parser_put.add_argument("-f", "--file", required=True, default=sys.stdin, type=argparse.FileType("rb"), help="File to upload ('-' for standard input)")
     parser_put.add_argument("DROPBOX_PATH", help="Path inside your Dropbox")
     parser_put.set_defaults(func=exec_put)
 
@@ -142,16 +148,70 @@ def exec_get(args, dbx):
             import msvcrt
             msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
         response = dbx.files_download(path)
-        print response[0]
         L.info("Retrieved file '{}', last modified {}".format(response[0].name, response[0].client_modified.strftime("%Y/%m/%d %H:%M:%S")))
         sys.stdout.write(response[1].content)
     else:
         response = dbx.files_download_to_file(args.output, path)
         L.info("Retrieved file '{}', last modified {}".format(response.name, response.client_modified.strftime("%Y/%m/%d %H:%M:%S")))
 
-def exec_put(args):
-    print "Executing PUT command"
-    print args
+def exec_put(args, dbx):
+    L.info("Executing PUT command")
+
+    path = validate_dropbox_path(args.DROPBOX_PATH)
+    mode = None
+
+    if   (args.add):        mode = dropbox.files.WriteMode.add
+    elif (args.overwrite):  mode = dropbox.files.WriteMode.overwrite
+    else:
+        L.error("Couldn't determine file mode")
+        sys.exit(1)
+
+    if (args.mute): L.info("Client sync notification will be muted")
+
+    session = None
+    try:
+        L.info("Starting file upload")
+
+        total_uploaded = 0
+        chunk = args.file.read(UPLOAD_CHUNK_SIZE)
+
+        L.info("Uploading first chunk, {} bytes ({}MB)".format(len(chunk), len(chunk) / 1024.0 / 1024.0))
+        session = dbx.files_upload_session_start(chunk)
+        total_uploaded += len(chunk)
+
+        while True:
+            chunk = args.file.read(UPLOAD_CHUNK_SIZE)
+
+            if (len(chunk) == 0): break
+
+            L.info("Uploading another chunk, {} bytes ({:.2f}MB) uploaded, next chunk contains {} bytes ({:.2f}MB)".format(total_uploaded, total_uploaded / 1024.0 / 1024.0, len(chunk), len(chunk) / 1024.0 / 1024.0))
+            dbx.files_upload_session_append_v2(
+                chunk,
+                dropbox.files.UploadSessionCursor(session_id=session.session_id, offset=total_uploaded)
+            )
+            total_uploaded += len(chunk)
+
+        L.info("Finishing upload")
+        new_file = dbx.files_upload_session_finish(
+            None,
+            dropbox.files.UploadSessionCursor(session_id=session.session_id, offset=total_uploaded),
+            dropbox.files.CommitInfo(
+                path=path,
+                mode=mode,
+                autorename=True,
+                client_modified=datetime.datetime.now(),
+                mute=args.mute
+            )
+        )
+
+        L.info("Uploaded file '{}'".format(_s(new_file.path_display)))
+    except KeyboardInterrupt:
+        L.warning("Cancelling upload")
+        dbx.files_upload_session_append_v2(
+            None,
+            dropbox.files.UploadSessionCursor(session_id=session.session_id, offset=total_uploaded),
+            close=True
+        )
 
 def exec_info_user(args, dbx):
     global L
@@ -256,10 +316,20 @@ def main():
                     L.error("API Error: Other (?)")
                 if (e.error.get_path().is_restricted_content()):
                     L.error("API Error: Restricted content")
+                else:
+                    L.error("API Error: Unknown path issue")
+                    raise e
             else:
                 L.error("API Error: Unknown path issue")
+                raise e
+        elif (type(e.error) is dropbox.files.UploadSessionLookupError):
+            if (e.error.is_incorrect_offset()):
+                L.error("API Error: Incorrect offset, correct was {} (if this appeared after cancelling an upload you can safely ignore it)".format(e.error.get_incorrect_offset().correct_offset))
+            else:
+                L.error("API Error: Unknown upload error")
+                raise e
         else:
-            L.error("API Error: Unknown", e)
+            L.error("API Error: Unknown")
             raise e
 
 
