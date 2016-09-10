@@ -5,6 +5,12 @@ A CLI interface for remotely interacting with Dropbox
 This CLI tool allows you to interface with your Dropbox storage without the need for local dropbox daemon or sync storage.
 This is accomplished using the Dropbox HTTP API.
 
+#### Supported operations
+* Browse
+* Download
+* Upload
+* User / Quota info
+
 ## Prerequisites
 The only external requirement is the official Dropbox SDK.
 
