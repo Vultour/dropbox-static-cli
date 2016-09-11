@@ -29,3 +29,28 @@ You should get redirected to the page of your new app. On this page, about halfw
 You will be presented with your new API key, make sure to save this or you'll have to make a new one if it gets lost.
 
 Great, now you've got your API key! This key is used with virtually every call to this Dropbox CLI (either by directly passing it in with `--api-key` or by saving it into a file - refer to the `--help` option for more details!).
+
+## Usage
+Refer to `./dropbox-cli [subcommand] --help` for usage information
+```
+usage: dropbox-cli [-h] [-v] [-k API_KEY] {list,get,put,info} ...
+
+A command line tool for interacting with Dropbox without the need for local
+sync storage
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -v, --verbose         Verbose output
+  -k API_KEY, --api-key API_KEY
+                        Dropbox API key
+
+Available subcommands:
+  {list,get,put,info}
+    list                List items in Dropbox
+    get                 Download items from Dropbox
+    put                 Upload items to Dropbox
+    info                Dropbox account information
+
+Note: Put your API key in /home/username/.dropbox-static-cli-key to
+avoid having to pass in --api-key with every command!
+```
